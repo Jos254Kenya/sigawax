@@ -1,0 +1,22 @@
+{
+    "name": "sigawa/sigawax",
+    "description": "A PHP framework that's not just modern - it's revolutionary. A living dev assistant, an orchestration engine, a productivity monster. Something that screams",
+    "type": "sigawa-framework",
+    "require": {
+        "vlucas/phpdotenv": "5.6.x-dev",
+        "symfony/console": "7.3.x-dev",
+        "phpmailer/phpmailer": "dev-master"
+    },
+    "license": "chatGPT",
+    "autoload": {
+        "psr-4": {
+            "Sigawa\\Sigawax\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "sigawa"
+        }
+    ],
+    "minimum-stability": "dev"
+}
