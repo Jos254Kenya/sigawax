@@ -3,7 +3,7 @@
         'name' => 'sigawa/sigawax',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => 'ffe1e078d48f58404daf33c00c31e52d8b8e75f3',
+        'reference' => '7127ed4405340b027ce2da83ed726aedbd4cf97d',
         'type' => 'sigawa-framework',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -17,6 +17,17 @@
             'type' => 'library',
             'install_path' => __DIR__ . '/../graham-campbell/result-type',
             'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+        'monolog/monolog' => array(
+            'pretty_version' => 'dev-main',
+            'version' => 'dev-main',
+            'reference' => '2e97231b969e0ffdeff03329b808945b4ba55e38',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../monolog/monolog',
+            'aliases' => array(
+                0 => '3.x-dev',
+            ),
             'dev_requirement' => false,
         ),
         'phpmailer/phpmailer' => array(
@@ -52,16 +63,28 @@
             ),
             'dev_requirement' => false,
         ),
+        'psr/log' => array(
+            'pretty_version' => 'dev-master',
+            'version' => 'dev-master',
+            'reference' => 'f16e1d5863e37f8d8c2a01719f5b34baa2b714d3',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../psr/log',
+            'aliases' => array(
+                0 => '3.x-dev',
+            ),
+            'dev_requirement' => false,
+        ),
         'psr/log-implementation' => array(
             'dev_requirement' => false,
             'provided' => array(
                 0 => '1.0|2.0|3.0',
+                1 => '3.0.0',
             ),
         ),
         'sigawa/sigawax' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => 'ffe1e078d48f58404daf33c00c31e52d8b8e75f3',
+            'reference' => '7127ed4405340b027ce2da83ed726aedbd4cf97d',
             'type' => 'sigawa-framework',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),

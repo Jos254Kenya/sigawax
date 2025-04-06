@@ -4,25 +4,37 @@ namespace Sigawa\Sigawax\Core;
 
 
 use Closure;
+use Exception;
 use InvalidArgumentException;
 use RuntimeException;
+use ReflectionClass;
+use ReflectionException;
 use Sigawa\Sigawax\Core\Contracts\ContainerInterface;
 use Sigawa\Sigawax\Core\Contracts\ServiceProviderInterface;
 
+/**
+ * Class Container
+ * 
+ * This class serves as the service container for Sigawax framework. 
+ * It manages bindings, service resolution, AI-powered predictions, and more.
+ */
 class Container implements ContainerInterface
 {
     /**
      * The container’s bindings.
+     *  @var array
      */
     protected array $bindings = [];
 
     /**
      * Shared instances (singletons).
+     *  @var array
      */
     protected array $instances = [];
 
     /**
      * Services tagged by group name.
+     * @var array
      */
     protected array $tags = [];
 
@@ -33,15 +45,45 @@ class Container implements ContainerInterface
 
     /**
      * Lifecycle callbacks.
+     * @var array
      */
     protected array $resolvingCallbacks = [];
+    /**
+     * Summary of afterResolvingCallbacks
+     * @var array
+     */
     protected array $afterResolvingCallbacks = [];
+    /**
+     * Summary of onBindCallbacks
+     * @var array
+     */
     protected array $onBindCallbacks = [];
+    /**
+     * Summary of globalOnBindCallbacks
+     * @var array
+     */
     protected array $globalOnBindCallbacks = [];
+    /**
+     * Summary of singletons
+     * @var array
+     */
     protected $singletons = [];
+    /**
+     * Summary of resolvedInstances
+     * @var array
+     */
     protected $resolvedInstances = [];
+    /**
+     * Summary of contextualBindings
+     * @var array
+     */
     protected $contextualBindings = [];
+
     // Initialize service providers property
+    /**
+     * Summary of serviceProviders
+     * @var array
+     */
     protected array $serviceProviders = [];
 
     /**
@@ -65,6 +107,11 @@ class Container implements ContainerInterface
     protected array $buildStack = [];
     /**
      * Bind an abstract type to a concrete implementation.
+     * Bind a service to the container.
+     * @param string $abstract
+     * @param mixed $concrete
+     * @param bool $shared
+     * @return void
      */
     public function bind(string $abstract, $concrete, bool $shared = false): void
     {
@@ -117,39 +164,48 @@ class Container implements ContainerInterface
     {
         return $this->contextualBindings;
     }
-
     /**
-     * Resolve a type from the container.
+     * Resolve a service from the container.
+     *
+     * @param string $abstract
+     * @param array $parameters
+     * @return mixed
+     * @throws Exception
      */
     public function make(string $abstract, array $parameters = [])
     {
-        // Check contextual binding first
-        $concrete = $this->getConcrete($abstract);
-
+        // Check if the service is already resolved
         if (isset($this->instances[$abstract])) {
             return $this->instances[$abstract];
         }
 
+        // Check for contextual bindings
+        $concrete = $this->getConcrete($abstract);
+
+        // If no concrete found, throw exception
+        if ($concrete === null) {
+            throw new Exception("No concrete found for [$abstract]. Please bind it to the container.");
+        }
         // Build the object with parameters
         $object = $this->build($concrete, $parameters);
 
-        // If it's shared, cache the instance
+        // If it's shared, cache the instance for future requests
         if ($this->isShared($abstract)) {
             $this->instances[$abstract] = $object;
         }
 
-        // Trigger lifecycle hooks
+        // Trigger lifecycle hooks before resolution
         foreach ($this->resolvingCallbacks[$abstract] ?? [] as $callback) {
             $callback($object, $this);
         }
 
+        // Trigger lifecycle hooks after resolution
         foreach ($this->afterResolvingCallbacks[$abstract] ?? [] as $callback) {
             $callback($object, $this);
         }
 
         return $object;
     }
-
 
     /**
      * Check if the binding is shared (singleton).
@@ -193,7 +249,7 @@ class Container implements ContainerInterface
             throw new RuntimeException("Class [$concrete] does not exist.");
         }
 
-        $reflector = new \ReflectionClass($concrete);
+        $reflector = new ReflectionClass($concrete);
 
         if (!$reflector->isInstantiable()) {
             throw new RuntimeException("Class [$concrete] is not instantiable.");
@@ -491,24 +547,30 @@ class Container implements ContainerInterface
     }
 
     /**
-     * Register a service provider manually.
+     * Register a service provider by its fully qualified class name.
+     *
+     * @param string $providerClass Fully qualified provider class name.
+     * @return void
+     * @throws \Exception
      */
-    public function registerProvider(string $providerFile): void
+    public function registerProvider(string $providerClass): void
     {
-        // Include the provider file
-        require_once $providerFile;
+        // Ensure the provider class exists (Composer autoloading should handle this).
+        if (!class_exists($providerClass)) {
+            throw new Exception("Provider class '{$providerClass}' not found.");
+        }
 
-        // Assuming the provider class is the same name as the file, e.g., MyServiceProvider.php -> MyServiceProvider
-        $providerClass = basename($providerFile, '.php');
+        // Instantiate the provider, passing in the container itself.
+        $provider = new $providerClass($this);
 
-        if (class_exists($providerClass)) {
-            $provider = new $providerClass($this);
-            $this->providers[] = $provider;
+        // Optionally, store the provider for later reference (e.g., if you need to call shutdown methods).
+        $this->providers[] = $provider;
 
-            // Register the provider
-            $provider->register();
+        // Register the provider.
+        $provider->register();
 
-            // Boot the provider after it has been registered
+        // If the provider has a boot method, call it.
+        if (method_exists($provider, 'boot')) {
             $provider->boot();
         }
     }
@@ -695,5 +757,86 @@ class Container implements ContainerInterface
     {
         $cacheData = unserialize(file_get_contents($cacheFile));
         return $cacheData['expires_at'] < time();
+    }
+
+    /**
+     * Retrieve a binding from the container.
+     *
+     * If the key is bound, returns it (and if it's a closure, it invokes it).
+     * Otherwise, it attempts to auto-resolve the dependency via reflection.
+     *
+     * @param string $key
+     * @return mixed
+     * @throws Exception
+     */
+    public function get(string $key)
+    {
+        // If the key is already bound, return it.
+        if (isset($this->bindings[$key])) {
+            $value = $this->bindings[$key];
+
+            // If the bound value is a closure, invoke it and cache the result.
+            if (is_callable($value)) {
+                $object = $value($this);
+                $this->bindings[$key] = $object;
+                return $object;
+            }
+
+            return $value;
+        }
+
+        // If not already bound, attempt to auto-resolve the class.
+        if (!class_exists($key)) {
+            throw new Exception("Class {$key} not found.");
+        }
+
+        try {
+            $reflection = new ReflectionClass($key);
+        } catch (ReflectionException $e) {
+            throw new Exception("Failed to reflect class {$key}: " . $e->getMessage());
+        }
+
+        // Ensure the class is instantiable.
+        if (!$reflection->isInstantiable()) {
+            throw new Exception("Class {$key} is not instantiable.");
+        }
+
+        $constructor = $reflection->getConstructor();
+        // If there's no constructor, just instantiate the class.
+        if ($constructor === null) {
+            $object = new $key;
+            $this->bind($key, $object);
+            return $object;
+        }
+
+        $dependencies = $constructor->getParameters();
+        $resolvedDependencies = [];
+
+        foreach ($dependencies as $dependency) {
+            // Try to get the class type of the dependency.
+            $dependencyClass = $dependency->getType() && !$dependency->getType()->isBuiltin()
+                ? $dependency->getType()->getName()
+                : null;
+
+            if ($dependencyClass) {
+                // Recursively resolve the dependency.
+                $resolvedDependencies[] = $this->get($dependencyClass);
+            } else {
+                // If no class is hinted, use the default value if available.
+                if ($dependency->isDefaultValueAvailable()) {
+                    $resolvedDependencies[] = $dependency->getDefaultValue();
+                } else {
+                    throw new Exception("Unable to resolve dependency '{$dependency->getName()}' for class {$key}.");
+                }
+            }
+        }
+
+        // Instantiate the class with the resolved dependencies.
+        $object = $reflection->newInstanceArgs($resolvedDependencies);
+
+        // Optionally, bind the resolved object back to the container for caching.
+        $this->bind($key, $object);
+
+        return $object;
     }
 }
