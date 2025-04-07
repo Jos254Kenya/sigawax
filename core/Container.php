@@ -1,16 +1,9 @@
 <?php
 
-namespace Sigawa\Sigawax\Core;
-
-
-use Closure;
-use Exception;
-use InvalidArgumentException;
-use RuntimeException;
-use ReflectionClass;
-use ReflectionException;
 use Sigawa\Sigawax\Core\Contracts\ContainerInterface;
 use Sigawa\Sigawax\Core\Contracts\ServiceProviderInterface;
+use Sigawa\Sigawax\Core\Exceptions\BindingResolutionException;
+use Sigawa\Sigawax\Core\Exceptions\ServiceNotFoundException;
 
 /**
  * Class Container
@@ -21,35 +14,28 @@ use Sigawa\Sigawax\Core\Contracts\ServiceProviderInterface;
 class Container implements ContainerInterface
 {
     /**
-     * The container’s bindings.
-     *  @var array
+     * container  bindings
+     * @var array
      */
     protected array $bindings = [];
-
     /**
      * Shared instances (singletons).
      *  @var array
      */
     protected array $instances = [];
 
-    /**
-     * Services tagged by group name.
-     * @var array
-     */
-    protected array $tags = [];
-
+    protected array $shared = [];
     /**
      * Contextual bindings by concrete + abstraction.
      */
     protected array $contextual = [];
-
     /**
-     * Lifecycle callbacks.
+     * resolvingCallbacks
      * @var array
      */
     protected array $resolvingCallbacks = [];
     /**
-     * Summary of afterResolvingCallbacks
+     * afterResolvingCallbacks
      * @var array
      */
     protected array $afterResolvingCallbacks = [];
@@ -59,48 +45,40 @@ class Container implements ContainerInterface
      */
     protected array $onBindCallbacks = [];
     /**
-     * Summary of globalOnBindCallbacks
+     * Services tagged by group name.
      * @var array
      */
-    protected array $globalOnBindCallbacks = [];
+    protected array $tags = [];
+    /**
+     * Summary of parameters
+     * @var array
+     */
+    protected array $parameters = [];
+    /**
+     * Registered service providers.
+     */
+    protected array $providers = [];
+    /**
+     * The registered aliases.
+     *
+     * @var array<string, string>
+     */
+    protected array $aliases = [];
     /**
      * Summary of singletons
      * @var array
      */
     protected $singletons = [];
     /**
-     * Summary of resolvedInstances
-     * @var array
+     * Scopes.
      */
-    protected $resolvedInstances = [];
-    /**
-     * Summary of contextualBindings
-     * @var array
-     */
-    protected $contextualBindings = [];
+    protected array $scopes = [];
 
-    // Initialize service providers property
     /**
      * Summary of serviceProviders
      * @var array
      */
     protected array $serviceProviders = [];
-
-    /**
-     * Parameters bag.
-     */
-    protected array $parameters = [];
-
-    /**
-     * Registered service providers.
-     */
-    protected array $providers = [];
-
-    /**
-     * Scopes.
-     */
-    protected array $scopes = [];
-
     /**
      * Currently building stack (for contextual binding).
      */
@@ -113,56 +91,78 @@ class Container implements ContainerInterface
      * @param bool $shared
      * @return void
      */
-    public function bind(string $abstract, $concrete, bool $shared = false): void
-    {
-        $this->bindings[$abstract] = compact('concrete', 'shared');
 
+    public function bind(string $abstract, $concrete): void
+    {
+        $this->bindings[$abstract] = $concrete;
         // Trigger onBind lifecycle hooks
-        foreach ($this->onBindCallbacks[$abstract] ?? [] as $callback) {
-            $callback($this);
+        foreach ($this->onBindCallbacks as $callback) {
+            $callback($abstract, $concrete);
         }
     }
-
     /**
      * Bind a singleton.
      */
     public function singleton(string $abstract, $concrete): void
     {
-        $this->bind($abstract, $concrete, true);
-    }
-    public function call($callable, array $parameters = [])
-    {
-        return call_user_func_array($callable, $parameters);
-    }
-    public function explain(string $abstract): array
-    {
-        if (!$this->has($abstract)) {
-            return [];
-        }
-
-        $bindings = $this->getBindings();
-        // Fetching the relevant binding information for the service
-        return isset($bindings[$abstract]) ? $bindings[$abstract] : [];
-    }
-    public function forget(string $abstract): void
-    {
-        unset($this->bindings[$abstract]);
-    }
-    public function getBindings(): array
-    {
-        return $this->bindings;
+        $this->shared[$abstract] = true;
+        $this->bind($abstract, $concrete);
     }
 
-    /**
-     * Check if a binding exists.
-     */
+    public function instance(string $abstract, $instance): void
+    {
+        $this->instances[$abstract] = $instance;
+    }
+
+    public function bindWhen(string $abstract, string $context, $concrete): void
+    {
+        $this->contextual[$context][$abstract] = $concrete;
+    }
+
     public function has(string $abstract): bool
     {
         return isset($this->bindings[$abstract]) || isset($this->instances[$abstract]);
     }
-    public function getContextualBindings(): array
+    /**
+     * Register an alias for a service.
+     */
+
+    /**
+     * Get the real name behind an alias.
+     */
+    public function alias(string $alias, string $abstract): void
     {
-        return $this->contextualBindings;
+        $this->aliases[$alias] = $abstract;
+    }
+    public function getAlias(string $name): string
+    {
+        return $this->aliases[$name] ?? $this->smartGuessAlias($name);
+    }
+    protected function smartGuessAlias(string $name): string
+    {
+        // Example logic for dynamic fallback
+        $guess = str_replace(' ', '', ucwords(str_replace(['.', '-', '_'], ' ', $name)));
+        if (interface_exists($guess)) {
+            return $guess;
+        }
+
+        $defaultNamespace = 'App\\Services\\';
+        if (class_exists($defaultNamespace . $guess)) {
+            return $defaultNamespace . $guess;
+        }
+
+        throw new ServiceNotFoundException("Alias [$name] not found and cannot be guessed.");
+    }
+
+
+    public function isSingleton(string $abstract): bool
+    {
+        return isset($this->shared[$abstract]);
+    }
+
+    public function forget(string $abstract): void
+    {
+        unset($this->bindings[$abstract], $this->instances[$abstract], $this->shared[$abstract]);
     }
     /**
      * Resolve a service from the container.
@@ -174,32 +174,34 @@ class Container implements ContainerInterface
      */
     public function make(string $abstract, array $parameters = [])
     {
-        // Check if the service is already resolved
+        // 🧠 Resolve alias first (whether static or smart)
+        $abstract = $this->getAlias($abstract);
+
+        // ✅ Already resolved singleton?
         if (isset($this->instances[$abstract])) {
             return $this->instances[$abstract];
         }
 
-        // Check for contextual bindings
+        // ❌ Not bound? Throw
+        if (!$this->has($abstract)) {
+            throw new ServiceNotFoundException("Service not bound: {$abstract}");
+        }
+
+        // 🎯 Resolve concrete from binding
         $concrete = $this->getConcrete($abstract);
 
-        // If no concrete found, throw exception
-        if ($concrete === null) {
-            throw new Exception("No concrete found for [$abstract]. Please bind it to the container.");
-        }
-        // Build the object with parameters
+        // 🛠️ Build it
         $object = $this->build($concrete, $parameters);
 
-        // If it's shared, cache the instance for future requests
-        if ($this->isShared($abstract)) {
+        // 🔒 Cache if singleton/shared
+        if ($this->isSingleton($abstract) || $this->isShared($abstract)) {
             $this->instances[$abstract] = $object;
         }
 
-        // Trigger lifecycle hooks before resolution
+        // ⚙️ Trigger lifecycle hooks
         foreach ($this->resolvingCallbacks[$abstract] ?? [] as $callback) {
             $callback($object, $this);
         }
-
-        // Trigger lifecycle hooks after resolution
         foreach ($this->afterResolvingCallbacks[$abstract] ?? [] as $callback) {
             $callback($object, $this);
         }
@@ -214,26 +216,12 @@ class Container implements ContainerInterface
     {
         return $this->bindings[$abstract]['shared'] ?? false;
     }
-    public function register(ServiceProviderInterface $provider): void
-    {
-        if (!$this->isRegistered(get_class($provider))) {
-            $provider->register($this);
-            $this->serviceProviders[get_class($provider)] = $provider;
-        }
-    }
-
     /**
      * Get the concrete implementation for the given abstract type.
      */
     protected function getConcrete(string $abstract)
     {
-        $context = end($this->buildStack);
-
-        if ($context && isset($this->contextual[$context][$abstract])) {
-            return $this->contextual[$context][$abstract];
-        }
-
-        return $this->bindings[$abstract]['concrete'] ?? $abstract;
+        return $this->bindings[$abstract] ?? $abstract;
     }
 
     /**
@@ -242,206 +230,172 @@ class Container implements ContainerInterface
     protected function build($concrete, array $parameters = [])
     {
         if ($concrete instanceof Closure) {
-            return $concrete($this, $parameters);
+            return $concrete($this, ...array_values($parameters)); // Spread for flexibility
         }
 
         if (!class_exists($concrete)) {
-            throw new RuntimeException("Class [$concrete] does not exist.");
-        }
-
-        $reflector = new ReflectionClass($concrete);
-
-        if (!$reflector->isInstantiable()) {
-            throw new RuntimeException("Class [$concrete] is not instantiable.");
+            throw new BindingResolutionException("Class [$concrete] does not exist.");
         }
 
         $this->buildStack[] = $concrete;
 
-        $constructor = $reflector->getConstructor();
+        $reflection = new \ReflectionClass($concrete);
 
-        if (!$constructor) {
+        if (!$reflection->isInstantiable()) {
+            throw new BindingResolutionException("Class [$concrete] is not instantiable.");
+        }
+
+        $constructor = $reflection->getConstructor();
+
+        if (is_null($constructor)) {
             array_pop($this->buildStack);
             return new $concrete;
         }
 
-        $dependencies = $constructor->getParameters();
-        $instances = [];
+        $dependencies = [];
+        foreach ($constructor->getParameters() as $param) {
+            $name = $param->getName();
+            $type = $param->getType();
 
-        foreach ($dependencies as $dependency) {
-            $name = $dependency->getName();
-            $type = $dependency->getType();
-
-            //  Check for user-supplied parameters first
             if (array_key_exists($name, $parameters)) {
-                $instances[] = $parameters[$name];
-            }
-            // 🔁 Auto-resolve class dependencies
-            elseif ($type && !$type->isBuiltin()) {
-                $instances[] = $this->make($type->getName());
-            }
-            // 🧪 Use default value if available
-            elseif ($dependency->isDefaultValueAvailable()) {
-                $instances[] = $dependency->getDefaultValue();
-            }
-            //  Can't resolve? Cry loudly
-            else {
-                throw new RuntimeException("Unresolvable dependency [\${$name}] in class {$concrete}");
+                $dependencies[] = $parameters[$name];
+            } elseif ($type && !$type->isBuiltin()) {
+                $dependencies[] = $this->make($type->getName());
+            } elseif ($param->isDefaultValueAvailable()) {
+                $dependencies[] = $param->getDefaultValue();
+            } else {
+                throw new BindingResolutionException("Unresolvable dependency [\${$name}] in class [$concrete]");
             }
         }
 
         array_pop($this->buildStack);
 
-        return $reflector->newInstanceArgs($instances);
-    }
-    public function getResolvedInstances(): array
-    {
-        return $this->resolvedInstances;
-    }
-    public function getTags(): array
-    {
-        return $this->tags;
-    }
-    public function instance(string $abstract, $instance): void
-    {
-        $this->resolvedInstances[$abstract] = $instance;
-    }
-    public function isRegistered(string $providerClass): bool
-    {
-        return isset($this->serviceProviders[$providerClass]);
-    }
-    public function isSingleton(string $abstract): bool
-    {
-        return isset($this->singletonBindings[$abstract]);
-    }
-    public function listDependencies(string $abstract): array
-    {
-        $dependencies = [];
-        // Here, inspect the binding and fetch the dependencies (if any)
-        return $dependencies;
+        return $reflection->newInstanceArgs($dependencies);
     }
 
-    /**
-     * Resolve all dependencies via `make()`.
-     */
-    protected function resolveDependencies(array $dependencies): array
+
+    public function call($callable, array $parameters = [])
     {
-        $results = [];
+        if (is_array($callable)) {
+            $ref = new \ReflectionMethod($callable[0], $callable[1]);
+        } else {
+            $ref = new \ReflectionFunction($callable);
+        }
 
-        foreach ($dependencies as $dependency) {
-            $type = $dependency->getType();
-
-            if ($type && !$type->isBuiltin()) {
-                $results[] = $this->make($type->getName());
-            } elseif ($dependency->isDefaultValueAvailable()) {
-                $results[] = $dependency->getDefaultValue();
+        $args = [];
+        foreach ($ref->getParameters() as $param) {
+            $name = $param->getName();
+            if (array_key_exists($name, $parameters)) {
+                $args[] = $parameters[$name];
+            } elseif (($type = $param->getType()) && !$type->isBuiltin()) {
+                $args[] = $this->make($type->getName());
             } else {
-                throw new RuntimeException("Unresolvable dependency: {$dependency->getName()}");
+                $args[] = null;
             }
         }
 
-        return $results;
+        return call_user_func_array($callable, $args);
     }
-    /**
-     * Bind a concrete service based on a specific context.
-     */
-    /**
-     * Bind a concrete service based on a specific context.
-     */
-    public function bindWhen(string $abstract, string $context, $concrete): void
+
+    public function resolving(string $abstract, callable $callback): void
     {
-        $this->contextual[$context][$abstract] = $concrete;
+        $this->resolvingCallbacks[$abstract][] = $callback;
+    }
+
+    public function afterResolving(string $abstract, callable $callback): void
+    {
+        $this->afterResolvingCallbacks[$abstract][] = $callback;
     }
     /**
-     * Tag a group of services with a specific tag.
+     * Retrieve cached data from file.
      */
+    public function retrieveCache(string $key)
+    {
+        $cacheFile = $this->getCacheFilePath($key);
+
+        if (!file_exists($cacheFile)) {
+            return null; // No cache found
+        }
+
+        $cacheData = unserialize(file_get_contents($cacheFile));
+
+        // Check if the cache has expired
+        if ($cacheData['expires_at'] < time()) {
+            $this->clearCache($key); // Clear expired cache
+            return null;
+        }
+
+        return $cacheData['data']; // Return the cached data
+    }
+    /**
+     * Clear a specific cache file.
+     */
+    public function clearCache(string $key): void
+    {
+        $cacheFile = $this->getCacheFilePath($key);
+        if (file_exists($cacheFile)) {
+            unlink($cacheFile); // Delete the cache file
+        }
+    }
+    /**
+     * Generate the file path for the cache.
+     */
+    private function getCacheFilePath(string $key): string
+    {
+        // Use a hash of the key as the filename to ensure uniqueness
+        return __DIR__ . '/cache/' . md5($key) . '.cache';
+    }
+    /**
+     * Cache data to a file.
+     */
+    public function storeCache(string $key, $data, int $ttl = 3600): void
+    {
+        $cacheFile = $this->getCacheFilePath($key);
+        $cacheData = [
+            'data' => $data,
+            'expires_at' => time() + $ttl,
+        ];
+
+        file_put_contents($cacheFile, serialize($cacheData));
+    }
+    /**
+     * Check if a specific cache exists.
+     */
+    public function hasCache(string $key): bool
+    {
+        $cacheFile = $this->getCacheFilePath($key);
+        return file_exists($cacheFile) && !$this->isCacheExpired($cacheFile);
+    }
+    /**
+     * Check if a cache has expired.
+     */
+    private function isCacheExpired(string $cacheFile): bool
+    {
+        $cacheData = unserialize(file_get_contents($cacheFile));
+        return $cacheData['expires_at'] < time();
+    }
+    public function onBind(callable $callback): void
+    {
+        $this->onBindCallbacks[] = $callback;
+    }
+
     public function tag(string $tag, array $services): void
     {
         foreach ($services as $service) {
             $this->tags[$tag][] = $service;
         }
     }
-    /**
-     * Resolve services by their tags.
-     */
+
     public function tagged(string $tag): array
     {
-        if (!isset($this->tags[$tag])) {
-            return [];
-        }
-
-        $instances = [];
-        foreach ($this->tags[$tag] as $abstract) {
-            $instances[] = $this->make($abstract);
-        }
-
-        return $instances;
+        return $this->tags[$tag] ?? [];
     }
-    /**
-     * Register a resolving callback for a given service.
-     */
-    public function resolving(string $abstract, $callback): void
+
+    public function scope(string $name, Closure $callback)
     {
-        $this->resolvingCallbacks[$abstract][] = $callback;
-        if (!is_callable($callback)) {
-            throw new InvalidArgumentException("The resolving callback for [$abstract] must be callable.");
-        }
+        return $callback($this);
     }
-
-    /**
-     * Register an after-resolving callback for a given service.
-     */
-    public function afterResolving(string $abstract, $callback): void
-    {
-        $this->afterResolvingCallbacks[$abstract][] = $callback;
-    }
-
-    /**
-     * Register an onBind callback for a given service.
-     */
-    public function onBind(callable $callback, ?string $abstract = null): void
-    {
-        if ($abstract) {
-            $this->onBindCallbacks[$abstract][] = $callback;
-        } else {
-            $this->globalOnBindCallbacks[] = $callback;
-        }
-    }
-
-    /**
-     * Set a parameter in the container.
-     */
-    public function setParameter(string $key, $value): void
-    {
-        $this->parameters[$key] = $value;
-    }
-
-    /**
-     * Get a parameter from the container.
-     */
-    public function getParameter(string $key)
-    {
-        return $this->parameters[$key] ?? null;
-    }
-
-    /**
-     * Begin a new scope and optionally execute a callback within it.
-     */
-    public function scope(string $name, ?Closure $callback = null)
-    {
-        $this->scopes[$name] = [];
-
-        if ($callback) {
-            try {
-                return $callback($this);
-            } finally {
-                // You can choose to keep or remove the scope after the callback
-                unset($this->scopes[$name]);
-            }
-        }
-    }
-
-
-    /**
+     /**
      * Forget a scope.
      */
     public function forgetScope(string $scopeName): void
@@ -449,89 +403,131 @@ class Container implements ContainerInterface
         unset($this->scopes[$scopeName]);
     }
 
-    /**
-     * Get all scoped bindings for a specific scope.
-     */
-    public function getScopedBindings(string $scopeName): array
+    public function getBindings(): array
     {
-        return $this->scopes[$scopeName] ?? [];
+        return $this->bindings;
     }
 
-    /**
-     * Bind a concrete service within a scope.
-     */
-    public function bindInScope(string $abstract, $concrete, string $scopeName): void
+    public function getContextualBindings(): array
     {
-        if (!isset($this->scopes[$scopeName])) {
-            throw new RuntimeException("Scope [$scopeName] is not active.");
-        }
-
-        $this->scopes[$scopeName][$abstract] = $concrete;
+        return $this->contextual;
     }
 
-    /**
-     * Resolve a binding from within a specific scope.
-     */
-    public function resolveInScope(string $abstract, string $scopeName)
+    public function getResolvedInstances(): array
     {
-        if (isset($this->scopes[$scopeName][$abstract])) {
-            return $this->make($this->scopes[$scopeName][$abstract]);
-        }
-
-        return $this->make($abstract); // Resolve normally if not in scope
+        return $this->instances;
     }
 
-    /**
-     * Suggest potential services or bindings based on the given context.
-     * This is where you can enhance with AI-powered recommendations in the future.
-     */
+    public function getTags(): array
+    {
+        return $this->tags;
+    }
+
+    public function explain(string $abstract): array
+    {
+        $alias = $this->getAlias($abstract);
+        $bound = $this->has($alias);
+        $bindings = $this->getBindings();
+        $binding = $bindings[$alias] ?? [];
+
+        return [
+            'abstract' => $abstract,
+            'alias_resolved_to' => $alias,
+            'bound' => $bound,
+            'concrete' => $binding['concrete'] ?? null,
+            'singleton' => $binding['singleton'] ?? false,
+            'shared' => $binding['shared'] ?? false,
+            'resolved' => isset($this->instances[$alias]),
+            'has_hooks' => isset($this->resolvingCallbacks[$alias]) || isset($this->afterResolvingCallbacks[$alias]),
+            'tags' => $this->tags[$alias] ?? [],
+            'contextual' => $this->contextual[$alias] ?? [],
+        ];
+    }
+
+    public function listDependencies(string $abstract): array
+    {
+        $concrete = $this->getConcrete($abstract);
+        $reflection = new \ReflectionClass($concrete);
+        $constructor = $reflection->getConstructor();
+        return $constructor ? array_map(fn($p) => $p->getName(), $constructor->getParameters()) : [];
+    }
+
     public function suggest(string $context = ''): array
     {
-        $suggestions = [];
-
-        // Example logic for suggesting bindings based on the context (formerly abstract)
-        if ($context === 'App\\Services\\Mailer') {
-            $suggestions[] = 'App\\Services\\SMTPMailer';
-            $suggestions[] = 'App\\Services\\SendGridMailer';
-        }
-
-        // Additional logic for more service suggestions could go here
-
-        return $suggestions;
+        return array_keys($this->bindings);
     }
-
     /**
      * Predict the most likely service to bind based on the given context.
      * You can improve this logic with historical data or trends.
+     * @var string $namespace
      */
     public function predict(string $namespace): array
     {
-        $prediction = [];
-
-        // Example prediction logic based on namespace
-        if ($namespace === 'App\\Services\\PaymentGateway') {
-            $prediction[] = 'App\\Services\\StripePaymentGateway'; // Predict Stripe as the most common payment gateway
-        }
-
-        // You could add more predictions for other namespaces if needed
-        return $prediction;
+        return array_filter(array_keys($this->bindings), fn($key) => str_starts_with($key, $namespace));
     }
 
+    /**
+     * Summary of setParameter
+     * @param string $key
+     * @param mixed $value
+     * @return void
+     */
+    public function setParameter(string $key, $value): void
+    {
+        $this->parameters[$key] = $value;
+    }
 
     /**
-     * Example of using the AI predictions and suggestions for improved development.
+     * Summary of getParameter
+     * @param string $key
      */
-    public function enhancedResolve(string $abstract)
+    public function getParameter(string $key)
     {
-        // AI-assisted predictions and suggestions
-        $predicted = $this->predict($abstract);
-        $suggestions = $this->suggest($abstract);
+        return $this->parameters[$key] ?? null;
+    }
 
-        if (empty($suggestions)) {
-            $suggestions[] = $predicted; // Fallback to predicted if no suggestions found
+    /**
+     * Summary of register
+     * @param Sigawa\Sigawax\Core\Contracts\ServiceProviderInterface $provider
+     * @return void
+     */
+    public function register(ServiceProviderInterface $provider): void
+    {
+        $class = get_class($provider);
+        if (!$this->isRegistered($class)) {
+            $provider->register($this);
+            $this->serviceProviders[$class] = $provider;
         }
-        // You can implement intelligent logging here based on AI-assisted resolution
-        return $this->make($abstract, $predicted); // Resolve based on prediction
+    }
+
+    /**
+     * Summary of isRegistered
+     * @param string $providerClass
+     * @return bool
+     */
+    public function isRegistered(string $providerClass): bool
+    {
+        return isset($this->serviceProviders[$providerClass]);
+    }
+    /**
+     * Export the current container state as a snapshot.
+     * 
+     * @return string JSON string representation of the container's state.
+     */
+    /**
+     * Export the current state of the container as an array.
+     * This includes bindings, singletons, parameters, scopes, tags, and contextual bindings.
+     */
+
+    public function exportState(): array
+    {
+        return [
+            'bindings' => $this->bindings,
+            'instances' => $this->instances,
+            'shared' => $this->shared,
+            'tags' => $this->tags,
+            'parameters' => $this->parameters,
+        ];
     }
     /**
      * Automatically discover and register all service providers in the providers/ directory.
@@ -587,178 +583,29 @@ class Container implements ContainerInterface
         }
     }
     /**
-     * Export the current container state as a snapshot.
-     * 
-     * @return string JSON string representation of the container's state.
+     * Example of using the AI predictions and suggestions for improved development.
      */
-    /**
-     * Export the current state of the container as an array.
-     * This includes bindings, singletons, parameters, scopes, tags, and contextual bindings.
-     */
-    public function exportState(): array
+    public function enhancedResolve(string $abstract)
     {
-        // Capture bindings and parameters
-        $state = [
-            'bindings' => $this->bindings,
-            'singletons' => $this->singletons,
-            'parameters' => $this->parameters,
-            'scopes' => $this->scopes
-        ];
+        // AI-assisted predictions and suggestions
+        $predicted = $this->predict($abstract);
+        $suggestions = $this->suggest($abstract);
 
-        // Optionally, export tagged services and contextual bindings if needed
-        $state['tags'] = $this->tags;
-        $state['contextual'] = $this->contextual;
-
-        return $state; // Return the state as an array
+        if (empty($suggestions)) {
+            $suggestions[] = $predicted; // Fallback to predicted if no suggestions found
+        }
+        // You can implement intelligent logging here based on AI-assisted resolution
+        return $this->make($abstract, $predicted); // Resolve based on prediction
     }
 
-    /**
-     * Import a saved snapshot to restore the container's state.
-     * 
-     * @param array $state The array representing the saved container state.
-     */
     public function importState(array $state): void
     {
-        // Validate the state array to ensure it has all the necessary keys
-        if (!is_array($state)) {
-            throw new InvalidArgumentException("State must be an array.");
-        }
-
-        // Restore bindings, singletons, parameters, etc.
         $this->bindings = $state['bindings'] ?? [];
-        $this->singletons = $state['singletons'] ?? [];
-        $this->parameters = $state['parameters'] ?? [];
-        $this->scopes = $state['scopes'] ?? [];
-
-        // Restore tagged and contextual bindings if needed
+        $this->instances = $state['instances'] ?? [];
+        $this->shared = $state['shared'] ?? [];
         $this->tags = $state['tags'] ?? [];
-        $this->contextual = $state['contextual'] ?? [];
+        $this->parameters = $state['parameters'] ?? [];
     }
-
-    /**
-     * Log a service binding event.
-     */
-    public function logBinding(string $abstract, $concrete): void
-    {
-        $message = "Binding: {$abstract} -> {$concrete}";
-        $this->logEvent('binding', $message);
-    }
-
-    /**
-     * Log a service resolution event.
-     */
-    public function logResolution(string $abstract, $instance): void
-    {
-        $message = "Resolved: {$abstract} -> " . get_class($instance);
-        $this->logEvent('resolution', $message);
-    }
-
-    /**
-     * Log a lifecycle event.
-     */
-    public function logLifecycle(string $abstract, string $event): void
-    {
-        $message = "Lifecycle Event: {$abstract} - {$event}";
-        $this->logEvent('lifecycle', $message);
-    }
-
-    /**
-     * Log AI insights.
-     */
-    public function logAI(string $type, string $abstract, array $insights): void
-    {
-        $message = "{$type} Insight: {$abstract} - " . implode(', ', $insights);
-        $this->logEvent('ai', $message);
-    }
-
-    /**
-     * General log event handler.
-     */
-    private function logEvent(string $type, string $message): void
-    {
-        // Determine where to log the event (e.g., file, database, external service)
-        // For simplicity, we'll log to a file here.
-        $logFile = __DIR__ . '/container.log';
-
-        $timestamp = date('Y-m-d H:i:s');
-        $logEntry = "[{$timestamp}] [{$type}] {$message}\n";
-
-        file_put_contents($logFile, $logEntry, FILE_APPEND);
-    }
-    /**
-     * Cache data to a file.
-     */
-    public function storeCache(string $key, $data, int $ttl = 3600): void
-    {
-        $cacheFile = $this->getCacheFilePath($key);
-        $cacheData = [
-            'data' => $data,
-            'expires_at' => time() + $ttl,
-        ];
-
-        file_put_contents($cacheFile, serialize($cacheData));
-    }
-
-    /**
-     * Retrieve cached data from file.
-     */
-    public function retrieveCache(string $key)
-    {
-        $cacheFile = $this->getCacheFilePath($key);
-
-        if (!file_exists($cacheFile)) {
-            return null; // No cache found
-        }
-
-        $cacheData = unserialize(file_get_contents($cacheFile));
-
-        // Check if the cache has expired
-        if ($cacheData['expires_at'] < time()) {
-            $this->clearCache($key); // Clear expired cache
-            return null;
-        }
-
-        return $cacheData['data']; // Return the cached data
-    }
-
-    /**
-     * Clear a specific cache file.
-     */
-    public function clearCache(string $key): void
-    {
-        $cacheFile = $this->getCacheFilePath($key);
-        if (file_exists($cacheFile)) {
-            unlink($cacheFile); // Delete the cache file
-        }
-    }
-
-    /**
-     * Generate the file path for the cache.
-     */
-    private function getCacheFilePath(string $key): string
-    {
-        // Use a hash of the key as the filename to ensure uniqueness
-        return __DIR__ . '/cache/' . md5($key) . '.cache';
-    }
-
-    /**
-     * Check if a specific cache exists.
-     */
-    public function hasCache(string $key): bool
-    {
-        $cacheFile = $this->getCacheFilePath($key);
-        return file_exists($cacheFile) && !$this->isCacheExpired($cacheFile);
-    }
-
-    /**
-     * Check if a cache has expired.
-     */
-    private function isCacheExpired(string $cacheFile): bool
-    {
-        $cacheData = unserialize(file_get_contents($cacheFile));
-        return $cacheData['expires_at'] < time();
-    }
-
     /**
      * Retrieve a binding from the container.
      *
@@ -838,5 +685,55 @@ class Container implements ContainerInterface
         $this->bind($key, $object);
 
         return $object;
+    }
+    /**
+     * Log a service binding event.
+     */
+    public function logBinding(string $abstract, $concrete): void
+    {
+        $message = "Binding: {$abstract} -> {$concrete}";
+        $this->logEvent('binding', $message);
+    }
+
+    /**
+     * Log a service resolution event.
+     */
+    public function logResolution(string $abstract, $instance): void
+    {
+        $message = "Resolved: {$abstract} -> " . get_class($instance);
+        $this->logEvent('resolution', $message);
+    }
+
+    /**
+     * Log a lifecycle event.
+     */
+    public function logLifecycle(string $abstract, string $event): void
+    {
+        $message = "Lifecycle Event: {$abstract} - {$event}";
+        $this->logEvent('lifecycle', $message);
+    }
+
+    /**
+     * Log AI insights.
+     */
+    public function logAI(string $type, string $abstract, array $insights): void
+    {
+        $message = "{$type} Insight: {$abstract} - " . implode(', ', $insights);
+        $this->logEvent('ai', $message);
+    }
+
+    /**
+     * General log event handler.
+     */
+    private function logEvent(string $type, string $message): void
+    {
+        // Determine where to log the event (e.g., file, database, external service)
+        // For simplicity, we'll log to a file here.
+        $logFile = __DIR__ . '/container.log';
+
+        $timestamp = date('Y-m-d H:i:s');
+        $logEntry = "[{$timestamp}] [{$type}] {$message}\n";
+
+        file_put_contents($logFile, $logEntry, FILE_APPEND);
     }
 }
