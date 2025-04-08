@@ -10,21 +10,8 @@
     
     // public function __construct()
     // {
-    //     $this->bootAsync();
+    //     could we have all the boot happening here
     // }
 
-    // protected function bootAsync(): void
-    // {
-    //     $preferred = $_ENV['SIGAWAX_ASYNC_ENGINE'] ?? null;
-
-    //     $engine = match ($preferred) {
-    //         'react' => new ReactEngine(),
-    //         'fiber' => new FiberEngine(),
-    //         default => null,
-    //     };
-
-    //     if ($engine) {
-    //         $this->useAsyncEngine($engine);
-    //     }
-    // }
+    
 // }

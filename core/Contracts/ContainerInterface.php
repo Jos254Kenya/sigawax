@@ -2,9 +2,7 @@
 
 namespace Sigawa\Sigawax\Core\Contracts;
 
-use Closure;
 use Sigawa\Sigawax\Core\Contracts\Interface\AI\AIAdapterInterface;
-use Sigawa\Sigawax\Core\Contracts\Interface\AIInterface;
 use Sigawa\Sigawax\Core\Contracts\Interface\AliasingInterface;
 use Sigawa\Sigawax\Core\Contracts\Interface\AsyncInterface;
 use Sigawa\Sigawax\Core\Contracts\Interface\AutoWireInterface;
@@ -15,8 +13,6 @@ use Sigawa\Sigawax\Core\Contracts\Interface\ProviderInterface;
 use Sigawa\Sigawax\Core\Contracts\Interface\ResolutionInterface;
 use Sigawa\Sigawax\Core\Contracts\Interface\ScopingInterface;
 use Sigawa\Sigawax\Core\Contracts\Interface\SnapshotInterface;
-use Sigawa\Sigawax\Core\Exceptions\BindingResolutionException;
-use Sigawa\Sigawax\Core\Exceptions\ServiceNotFoundException;
 use TaggingInterface;
 
 /**
